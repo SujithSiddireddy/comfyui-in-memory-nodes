@@ -1,0 +1,13 @@
+[project]
+name = "comfyui-in-memory-nodes"
+description = "ComfyUI nodes that work entirely in memory (base64 in/out) without writing to input/, input/clipspace/, output/, or temp/."
+version = "0.1.0"
+license = { file = "LICENSE" }
+
+[project.urls]
+Repository = "https://github.com/SujithSiddireddy/comfyui-in-memory-nodes"
+
+[tool.comfy]
+PublisherId = "REPLACE_WITH_YOUR_PUBLISHER_ID"
+DisplayName = "comfyui-in-memory-nodes"
+Icon = ""
