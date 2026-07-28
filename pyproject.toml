@@ -8,6 +8,6 @@ license = { file = "LICENSE" }
 Repository = "https://github.com/SujithSiddireddy/comfyui-in-memory-nodes"
 
 [tool.comfy]
-PublisherId = "REPLACE_WITH_YOUR_PUBLISHER_ID"
+PublisherId = "sujith-siddireddy"
 DisplayName = "comfyui-in-memory-nodes"
 Icon = ""
