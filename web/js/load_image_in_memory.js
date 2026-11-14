@@ -1,4 +1,5 @@
 const { app } = window.comfyAPI.app;
+import { ignoreWidgetWidth } from "./forward_canvas_events.js";
 
 // Drag-and-drop image + paint-mask widget for LoadImageInMemory.
 // Everything happens client-side (FileReader + canvas); the resulting PNGs
@@ -136,6 +137,9 @@ function setup(node) {
     // (negative margin) and cap its width so it never reaches the connectors;
     // the options panel sits below the connector rows at full width.
     const outputRowH = LiteGraph?.NODE_SLOT_HEIGHT ?? 20;
+    // Nodes 2.0 lays slot rows out in HTML and never calls node.onDrawForeground, so there the toolbar
+    // uses this fixed top margin (px) instead of the per-frame alignment.
+    const VUE_TOOLBAR_MARGIN_TOP = -46;
     const outputsH = (node.outputs?.length || 0) * outputRowH;
     const toolbar = document.createElement("div");
     toolbar.style.cssText = `
@@ -977,6 +981,8 @@ function setup(node) {
     const TITLE_H = LiteGraph?.NODE_TITLE_HEIGHT ?? 30;
     const NODE_MARGIN = 10;
     function minWidgetHeight() {
+        // Read per layout pass, since Nodes 2.0 can be toggled while the node is on the canvas.
+        if (LiteGraph.vueNodesMode) toolbar.style.marginTop = `${VUE_TOOLBAR_MARGIN_TOP}px`;
         const frameH = Math.max(state.img ? 90 : MIN_FRAME_H, state.maskOpen ? railHeight : 0);
         return frameH + toolbar.offsetHeight + (state.maskOpen ? options.offsetHeight + 6 : 0);
     }
@@ -987,6 +993,7 @@ function setup(node) {
         getMaxHeight: () => 8000,
         getHeight: () => Math.max(minWidgetHeight(), node.size[1] - TITLE_H - NODE_MARGIN),
     });
+    ignoreWidgetWidth(domWidget);
     node.resizable = true;
 
     // Line the button rows up with the connector rows: LiteGraph knows where the
@@ -994,7 +1001,7 @@ function setup(node) {
     const onDrawForeground = node.onDrawForeground;
     node.onDrawForeground = function () {
         onDrawForeground?.apply(this, arguments);
-        if (domWidget.y == null || !node.outputs?.length) return;
+        if (LiteGraph.vueNodesMode || domWidget.y == null || !node.outputs?.length) return;
         const slotY = node.getConnectionPos(false, 0)[1] - node.pos[1];
         const margin = Math.round(slotY - outputRowH / 2 - domWidget.y) - 12;
         toolbar.style.marginTop = `${margin}px`;

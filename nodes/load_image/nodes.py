@@ -25,6 +25,14 @@ class LoadImageInMemory:
     """
 
     CATEGORY = "image"
+    DESCRIPTION = (
+        "Loads an image and optional mask from the browser. Prevents ComfyUI from writing the data to server disk.\n"
+        "\n"
+        "Source: image/mask widget values, populated client-side by drag-and-drop or the mask editor.\n"
+        "Processing: decoded in memory (PIL → float32 tensors).\n"
+        "Server disk I/O: NONE. No data written to input/ and input/clipspace/ on the server\n"
+        "Outputs: IMAGE, MASK."
+    )
     ESSENTIALS_CATEGORY = "Basics"
     SEARCH_ALIASES = ["load", "image", "load image", "in memory", "upload image", "paint mask", "mask"]
 
