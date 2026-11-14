@@ -25,6 +25,8 @@ class LoadImageInMemory:
     """
 
     CATEGORY = "image"
+    ESSENTIALS_CATEGORY = "Basics"
+    SEARCH_ALIASES = ["load", "image", "load image", "in memory", "upload image", "paint mask", "mask"]
 
     @classmethod
     def INPUT_TYPES(cls):
