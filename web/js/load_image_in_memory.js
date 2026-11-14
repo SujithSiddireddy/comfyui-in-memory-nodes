@@ -12,10 +12,12 @@ const ICON_SVG_OPEN = 'viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 const ICONS = {
     upload: `<svg width="13" height="13" ${ICON_SVG_OPEN}><path d="M12 16V4M8 8l4-4 4 4"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>`,
     brush: `<svg width="15" height="15" ${ICON_SVG_OPEN}><path d="M18.4 2.6a2 2 0 0 1 3 3L12 15l-4 1 1-4z"/><path d="M8 16c-2.5 0-4 1.5-4 3.5 0 1-.5 1.5-1 2 3.5.5 7-.5 7-3.5"/></svg>`,
+    eraser: `<svg width="15" height="15" ${ICON_SVG_OPEN}><path d="m7 21-4.3-4.3a1 1 0 0 1 0-1.4l9.6-9.6a1 1 0 0 1 1.4 0l5.6 5.6a1 1 0 0 1 0 1.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>`,
     bucket: `<svg width="15" height="15" ${ICON_SVG_OPEN}><path d="m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11z"/><path d="m5 2 5 5"/><path d="M2 13h15"/><path d="M22 20a2 2 0 1 1-4 0c0-1.6 1.7-2.4 2-4 .3 1.6 2 2.4 2 4z"/></svg>`,
     invert: `<svg width="15" height="15" ${ICON_SVG_OPEN}><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/></svg>`,
     undo: `<svg width="15" height="15" ${ICON_SVG_OPEN}><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg>`,
     redo: `<svg width="15" height="15" ${ICON_SVG_OPEN}><path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></svg>`,
+    info: `<svg width="14" height="14" ${ICON_SVG_OPEN}><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/></svg>`,
     reset: `<svg width="14" height="14" ${ICON_SVG_OPEN}><path d="M3 2v6h6"/><path d="M3 13a9 9 0 1 0 3-7.7L3 8"/></svg>`,
 };
 
@@ -36,7 +38,7 @@ const tooltip = document.createElement("div");
 tooltip.style.cssText = `
     position:fixed;display:none;z-index:1000;pointer-events:none;padding:4px 8px;border-radius:6px;
     background:#0f0f12;color:#e8e8ec;font:500 11px/16px var(--comfy-font, Inter, "Segoe UI", Helvetica, Arial, sans-serif);
-    border:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 14px rgba(0,0,0,0.45);white-space:nowrap;
+    border:1px solid rgba(255,255,255,0.12);box-shadow:0 4px 14px rgba(0,0,0,0.45);white-space:pre;
 `;
 document.body.appendChild(tooltip);
 let tooltipTimer = 0;
@@ -77,7 +79,7 @@ function setup(node) {
     hideWidget(imageWidget);
     hideWidget(maskWidget);
 
-    const state = { img: null, w: 0, h: 0, brush: 32, hardness: 100, opacity: 55, maskColor: "#a10f0f", tool: "brush", maskOpen: false, previewMask: false, painting: false, bucket: false, sam: null, model: null, modelCheck: null, modelBusy: false, segment: false, samBusy: false, samHover: null, samAt: null, samRunning: false };
+    const state = { img: null, w: 0, h: 0, brush: 25, hardness: 50, opacity: 75, maskColor: "#a10f0f", tool: "brush", maskOpen: false, previewMask: false, painting: false, bucket: false, sam: null, model: null, modelCheck: null, modelBusy: false, segment: false, samBusy: false, samHover: null, samAt: null, samRunning: false };
 
     const HISTORY_LIMIT = 10;
     const undoStack = [];
@@ -261,8 +263,8 @@ function setup(node) {
     const options = document.createElement("div");
     options.style.cssText = `
         display:none;grid-template-columns:76px minmax(0,1fr);align-items:center;
-        gap:8px 10px;flex:0 0 auto;width:100%;box-sizing:border-box;
-        border-top:1px solid var(--border-color, #3a3a40);padding:10px 0 2px;
+        gap:2px 10px;flex:0 0 auto;width:100%;box-sizing:border-box;
+        border-top:1px solid var(--border-color, #3a3a40);padding:8px 0 2px;
     `;
 
     function makeLabel(text) {
@@ -273,7 +275,7 @@ function setup(node) {
     }
     function makeCell() {
         const cell = document.createElement("div");
-        cell.style.cssText = "display:flex;align-items:center;gap:8px;min-width:0;height:24px;";
+        cell.style.cssText = "display:flex;align-items:center;gap:8px;min-width:0;height:20px;";
         return cell;
     }
     function makeSlider(min, max, value) {
@@ -296,18 +298,17 @@ function setup(node) {
         return slider;
     }
 
-    const brushBtn = makeButton("Paint", "Paint mask");
-    const eraserBtn = makeButton("Erase", "Erase mask");
-    const segmentBtn = makeButton("Segment", "Add whole objects to the mask with click-to-segment");
+    const brushBtn = makeButton("Manual", "Paint, erase or fill the mask by hand");
+    const segmentBtn = makeButton("Auto", "Add whole objects to the mask with click-to-segment");
     const clearBtn = makeButton(ICONS.reset, "Reset mask");
     clearBtn.style.flex = "0 0 auto";
     setActive(brushBtn, true);
 
-    // Paint / Erase / Segment as one segmented control.
+    // Manual / Auto as one segmented control.
     const segment = document.createElement("div");
     segment.style.cssText = "display:flex;flex:1;min-width:0;gap:2px;padding:2px;border-radius:7px;background:rgba(255,255,255,0.05);";
-    segment.append(brushBtn, eraserBtn, segmentBtn);
-    for (const btn of [brushBtn, eraserBtn, segmentBtn]) {
+    segment.append(brushBtn, segmentBtn);
+    for (const btn of [brushBtn, segmentBtn]) {
         btn.style.height = "20px";
         btn.style.padding = "0 4px";
         btn.style.overflow = "hidden";
@@ -315,7 +316,6 @@ function setup(node) {
         btn.style.minWidth = "0";
     }
 
-    // Paint/Erase stay selected while the bucket is active; the bucket only changes what a click does.
     function selectTool(tool, bucket = false) {
         state.tool = tool;
         state.bucket = bucket;
@@ -329,11 +329,7 @@ function setup(node) {
     });
     brushBtn.addEventListener("click", (e) => {
         e.preventDefault();
-        selectTool("brush");
-    });
-    eraserBtn.addEventListener("click", (e) => {
-        e.preventDefault();
-        selectTool("eraser");
+        selectTool(state.tool, state.bucket);
     });
     clearBtn.addEventListener("click", (e) => {
         e.preventDefault();
@@ -387,8 +383,7 @@ function setup(node) {
     });
 
     const modeCell = makeCell();
-    modeCell.append(segment, clearBtn);
-    modeCell.style.gridColumn = "1 / -1";
+    modeCell.append(segment);
     // Readout boxes share one width so both slider ends line up.
     function makeValueBox(slider, format) {
         const box = document.createElement("div");
@@ -411,7 +406,7 @@ function setup(node) {
     // Click-to-segment (SlimSAM): the Segment tab analyzes the image once, then hovering previews the object under
     // the cursor and clicking adds it to the mask.
     const segmentPanel = document.createElement("div");
-    segmentPanel.style.cssText = "display:none;grid-column:1 / -1;flex-direction:column;gap:6px;";
+    segmentPanel.style.cssText = "display:none;grid-column:1 / -1;flex-direction:column;gap:6px;margin:6px 0 4px 0;";
     function makePanelButton(text, title) {
         const btn = makeButton(text, title);
         btn.style.height = "24px";
@@ -421,46 +416,27 @@ function setup(node) {
     }
     const samBtn = makePanelButton("Click to auto segment the image", "Prepare the image so objects can be picked with a click");
     const downloadBtn = makePanelButton("Download segmentation model", "Download the segmentation model to the server's models folder (needed once)");
-    // Shown in place of the button once the image is analysed: numbered steps in a box, with a tip under step 1.
+    // Shown in place of the button once the image is analysed; the full steps live in the info icon's tooltip.
     const segmentHint = document.createElement("div");
-    segmentHint.style.cssText = `
-        display:none;flex-direction:column;gap:7px;padding:9px 10px;box-sizing:border-box;border-radius:8px;
-        background:rgba(255,255,255,0.04);border:1px solid var(--border-color, #3a3a40);
-    `;
-    const hintSteps = [
-        ["Hover the image to preview segments.", "Move the cursor a little to switch between a whole region and a part."],
-        ["Click a segment to add it to the mask."],
-        ["Click more segments to combine them."],
-        ["Switch to Paint mode to fill any gaps."],
-    ];
-    hintSteps.forEach(([text, tip], i) => {
-        const row = document.createElement("div");
-        row.style.cssText = "display:flex;gap:8px;align-items:flex-start;";
-        const num = document.createElement("span");
-        num.textContent = i + 1;
-        num.style.cssText = `
-            flex:0 0 auto;width:15px;height:15px;border-radius:50%;box-sizing:border-box;text-align:center;
-            font-size:9px;line-height:15px;font-weight:600;color:#b4c9ff;background:rgba(74,125,252,0.3);
-        `;
-        const content = document.createElement("div");
-        content.style.cssText = "display:flex;flex-direction:column;gap:2px;min-width:0;";
-        const line = document.createElement("span");
-        line.textContent = text;
-        line.style.cssText = "font-size:11px;line-height:15px;color:#d0d0d6;";
-        content.append(line);
-        if (tip) {
-            const note = document.createElement("span");
-            note.textContent = tip;
-            note.style.cssText = "font-size:10px;line-height:13px;color:#8a8a90;";
-            content.append(note);
-        }
-        row.append(num, content);
-        segmentHint.append(row);
-    });
+    segmentHint.style.cssText = "display:none;align-items:center;gap:6px;font-size:11px;line-height:15px;color:#d0d0d6;";
+    const hintText = document.createElement("span");
+    hintText.textContent = "Hover the image to preview segments.";
+    hintText.style.flex = "1";
+    const infoIcon = document.createElement("span");
+    infoIcon.innerHTML = ICONS.info;
+    infoIcon.style.cssText = "display:flex;flex:0 0 auto;color:#8a8a90;cursor:help;";
+    attachTooltip(infoIcon, [
+        "1. Hover the image to preview segments.",
+        "    Move the cursor a little to switch between a whole region and a part.",
+        "2. Click a segment to add it to the mask.",
+        "3. Click more segments to combine them.",
+        "4. Switch to Manual mode to fill any gaps.",
+    ].join("\n"));
+    segmentHint.append(hintText, infoIcon);
     segmentPanel.append(downloadBtn, samBtn, segmentHint);
     const SAM_HOVER_RGB = [74, 125, 252];
 
-    // Brush size and hardness only apply to Paint/Erase.
+    // Brush size and hardness only apply to Manual mode.
     const paintRows = [makeLabel("Brush size"), sizeCell, makeLabel("Hardness"), hardnessCell];
     const paintRowDisplay = ["", "flex", "", "flex"];
 
@@ -500,10 +476,10 @@ function setup(node) {
     }
 
     function updateTabs() {
-        setActive(brushBtn, !state.segment && state.tool === "brush");
-        setActive(eraserBtn, !state.segment && state.tool === "eraser");
+        setActive(brushBtn, !state.segment);
         setActive(segmentBtn, state.segment);
-        setActive(railBrushBtn, !state.segment && !state.bucket);
+        setActive(railBrushBtn, !state.segment && !state.bucket && state.tool === "brush");
+        setActive(railEraseBtn, !state.segment && !state.bucket && state.tool === "eraser");
         setActive(railFillBtn, !state.segment && state.bucket);
         brushCursor.style.display = "none";
         state.samHover = null;
@@ -600,7 +576,8 @@ function setup(node) {
         });
     }
 
-    options.append(modeCell, ...paintRows, segmentPanel, makeLabel("Mask opacity"), opacityCell);
+    paintRows[0].style.marginTop = paintRows[1].style.marginTop = "6px";
+    options.append(makeLabel("Mode"), modeCell, ...paintRows, segmentPanel, makeLabel("Mask opacity"), opacityCell);
 
     // Opening the panel grows the node by the panel's height (and closing shrinks
     // it back) so the canvas keeps the space it had.
@@ -651,6 +628,7 @@ function setup(node) {
         return group;
     }
     const railBrushBtn = makeButton(ICONS.brush, "Brush");
+    const railEraseBtn = makeButton(ICONS.eraser, "Eraser");
     const railFillBtn = makeButton(ICONS.bucket, "Fill bucket");
     const invertBtn = makeButton(ICONS.invert, "Invert mask");
     const undoBtn = makeButton(ICONS.undo, "Undo");
@@ -667,11 +645,15 @@ function setup(node) {
     setActive(railBrushBtn, true);
     railBrushBtn.addEventListener("click", (e) => {
         e.preventDefault();
-        selectTool(state.tool);
+        selectTool("brush");
+    });
+    railEraseBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        selectTool("eraser");
     });
     railFillBtn.addEventListener("click", (e) => {
         e.preventDefault();
-        selectTool(state.tool, true);
+        selectTool("brush", true);
     });
     invertBtn.addEventListener("click", (e) => {
         e.preventDefault();
@@ -685,7 +667,7 @@ function setup(node) {
             maskCtx.putImageData(img, 0, 0);
         });
     });
-    rail.append(railGroup(colorBtn), railGroup(railBrushBtn, railFillBtn), railGroup(invertBtn, undoBtn, redoBtn));
+    rail.append(railGroup(colorBtn), railGroup(railBrushBtn, railEraseBtn, railFillBtn), railGroup(invertBtn, undoBtn, redoBtn), railGroup(clearBtn));
 
     const body = document.createElement("div");
     body.style.cssText = `display:flex;gap:6px;flex:1 1 auto;height:${MIN_FRAME_H}px;min-height:0;`;
@@ -1229,7 +1211,7 @@ function setup(node) {
         toolbar.style.marginTop = `${margin}px`;
     };
 
-    // Narrowest width at which the Paint/Erase/Segment/reset row still fits beside the output slots.
+    // Narrowest width at which the Manual/Auto/reset row still fits beside the output slots.
     const MIN_NODE_W = 250;
     const onResize = node.onResize;
     node.onResize = function (size) {
