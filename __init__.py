@@ -1,6 +1,6 @@
-from .nodes import load_image
+from .nodes import compare_images, load_image, preview_save_image
 
-_MODULES = [load_image]
+_MODULES = [load_image, preview_save_image, compare_images]
 
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
