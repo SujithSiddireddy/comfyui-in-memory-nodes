@@ -19,6 +19,13 @@ canvas: brush/eraser tools, adjustable brush size, resizable node. The image and
 are read client-side, sent as base64 PNG and decoded in memory into the `IMAGE`/`MASK`
 outputs.
 
+**Segment tab:** in the mask options, switch Mode to Segment. The first time, press "Download segmentation model" (35 MB,
+nothing is downloaded until you do), then press "Click to auto segment the image" (a few
+seconds). Then hover the image to preview segments and click one to add it to the mask; click
+several to combine them, and switch to Paint or Erase to fix the gaps. It uses quantized
+SlimSAM-50 (stored in `models/slimsam_50/`) in the browser through
+a vendored ONNX Runtime Web, so the image is never uploaded.
+
 ### Preview Image (In-Memory)
 
 Takes `images` and returns them to the frontend as base64 PNGs in the node's UI output.

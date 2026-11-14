@@ -1,5 +1,6 @@
 const { app } = window.comfyAPI.app;
 import { ignoreWidgetWidth } from "./forward_canvas_events.js";
+import { startSam, getModelStatus, downloadModels } from "./segmentation.js";
 
 // Drag-and-drop image + paint-mask widget for LoadImageInMemory.
 // Everything happens client-side (FileReader + canvas); the resulting PNGs
@@ -76,7 +77,7 @@ function setup(node) {
     hideWidget(imageWidget);
     hideWidget(maskWidget);
 
-    const state = { img: null, w: 0, h: 0, brush: 32, hardness: 100, opacity: 55, maskColor: "#a10f0f", tool: "brush", maskOpen: false, previewMask: false, painting: false, bucket: false };
+    const state = { img: null, w: 0, h: 0, brush: 32, hardness: 100, opacity: 55, maskColor: "#a10f0f", tool: "brush", maskOpen: false, previewMask: false, painting: false, bucket: false, sam: null, model: null, modelCheck: null, modelBusy: false, segment: false, samBusy: false, samHover: null, samAt: null, samRunning: false };
 
     const HISTORY_LIMIT = 10;
     const undoStack = [];
@@ -249,6 +250,7 @@ function setup(node) {
     const onRemoved = node.onRemoved;
     node.onRemoved = function () {
         state.previewMask = false;
+        state.sam?.dispose();
         maskWindow.remove();
         colorInput.remove();
         return onRemoved?.apply(this, arguments);
@@ -258,7 +260,7 @@ function setup(node) {
     // Label column + control column; every row shares the same column edges.
     const options = document.createElement("div");
     options.style.cssText = `
-        display:none;grid-template-columns:64px minmax(0,1fr);align-items:center;
+        display:none;grid-template-columns:76px minmax(0,1fr);align-items:center;
         gap:8px 10px;flex:0 0 auto;width:100%;box-sizing:border-box;
         border-top:1px solid var(--border-color, #3a3a40);padding:10px 0 2px;
     `;
@@ -296,16 +298,19 @@ function setup(node) {
 
     const brushBtn = makeButton("Paint", "Paint mask");
     const eraserBtn = makeButton("Erase", "Erase mask");
+    const segmentBtn = makeButton("Segment", "Add whole objects to the mask with click-to-segment");
     const clearBtn = makeButton(ICONS.reset, "Reset mask");
     clearBtn.style.flex = "0 0 auto";
     setActive(brushBtn, true);
 
-    // Paint / Erase as one segmented control.
+    // Paint / Erase / Segment as one segmented control.
     const segment = document.createElement("div");
     segment.style.cssText = "display:flex;flex:1;min-width:0;gap:2px;padding:2px;border-radius:7px;background:rgba(255,255,255,0.05);";
-    segment.append(brushBtn, eraserBtn);
-    for (const btn of [brushBtn, eraserBtn]) {
+    segment.append(brushBtn, eraserBtn, segmentBtn);
+    for (const btn of [brushBtn, eraserBtn, segmentBtn]) {
         btn.style.height = "20px";
+        btn.style.padding = "0 4px";
+        btn.style.overflow = "hidden";
         btn.style.flex = "1 1 0";
         btn.style.minWidth = "0";
     }
@@ -314,12 +319,14 @@ function setup(node) {
     function selectTool(tool, bucket = false) {
         state.tool = tool;
         state.bucket = bucket;
-        setActive(brushBtn, tool === "brush");
-        setActive(eraserBtn, tool === "eraser");
-        setActive(railBrushBtn, !bucket);
-        setActive(railFillBtn, bucket);
-        brushCursor.style.display = "none";
+        state.segment = false;
+        updateTabs();
     }
+    segmentBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        state.segment = true;
+        updateTabs();
+    });
     brushBtn.addEventListener("click", (e) => {
         e.preventDefault();
         selectTool("brush");
@@ -381,6 +388,7 @@ function setup(node) {
 
     const modeCell = makeCell();
     modeCell.append(segment, clearBtn);
+    modeCell.style.gridColumn = "1 / -1";
     // Readout boxes share one width so both slider ends line up.
     function makeValueBox(slider, format) {
         const box = document.createElement("div");
@@ -399,7 +407,200 @@ function setup(node) {
     hardnessCell.append(hardnessSlider, makeValueBox(hardnessSlider, (v) => `${v} %`));
     const opacityCell = makeCell();
     opacityCell.append(opacitySlider, makeValueBox(opacitySlider, (v) => `${v} %`));
-    options.append(makeLabel("Mode"), modeCell, makeLabel("Brush size"), sizeCell, makeLabel("Hardness"), hardnessCell, makeLabel("Opacity"), opacityCell);
+
+    // Click-to-segment (SlimSAM): the Segment tab analyzes the image once, then hovering previews the object under
+    // the cursor and clicking adds it to the mask.
+    const segmentPanel = document.createElement("div");
+    segmentPanel.style.cssText = "display:none;grid-column:1 / -1;flex-direction:column;gap:6px;";
+    function makePanelButton(text, title) {
+        const btn = makeButton(text, title);
+        btn.style.height = "24px";
+        btn.dataset.rest = "rgba(255,255,255,0.06)";
+        btn.style.background = btn.dataset.rest;
+        return btn;
+    }
+    const samBtn = makePanelButton("Click to auto segment the image", "Prepare the image so objects can be picked with a click");
+    const downloadBtn = makePanelButton("Download segmentation model", "Download the segmentation model to the server's models folder (needed once)");
+    // Shown in place of the button once the image is analysed: numbered steps in a box, with a tip under step 1.
+    const segmentHint = document.createElement("div");
+    segmentHint.style.cssText = `
+        display:none;flex-direction:column;gap:7px;padding:9px 10px;box-sizing:border-box;border-radius:8px;
+        background:rgba(255,255,255,0.04);border:1px solid var(--border-color, #3a3a40);
+    `;
+    const hintSteps = [
+        ["Hover the image to preview segments.", "Move the cursor a little to switch between a whole region and a part."],
+        ["Click a segment to add it to the mask."],
+        ["Click more segments to combine them."],
+        ["Switch to Paint mode to fill any gaps."],
+    ];
+    hintSteps.forEach(([text, tip], i) => {
+        const row = document.createElement("div");
+        row.style.cssText = "display:flex;gap:8px;align-items:flex-start;";
+        const num = document.createElement("span");
+        num.textContent = i + 1;
+        num.style.cssText = `
+            flex:0 0 auto;width:15px;height:15px;border-radius:50%;box-sizing:border-box;text-align:center;
+            font-size:9px;line-height:15px;font-weight:600;color:#b4c9ff;background:rgba(74,125,252,0.3);
+        `;
+        const content = document.createElement("div");
+        content.style.cssText = "display:flex;flex-direction:column;gap:2px;min-width:0;";
+        const line = document.createElement("span");
+        line.textContent = text;
+        line.style.cssText = "font-size:11px;line-height:15px;color:#d0d0d6;";
+        content.append(line);
+        if (tip) {
+            const note = document.createElement("span");
+            note.textContent = tip;
+            note.style.cssText = "font-size:10px;line-height:13px;color:#8a8a90;";
+            content.append(note);
+        }
+        row.append(num, content);
+        segmentHint.append(row);
+    });
+    segmentPanel.append(downloadBtn, samBtn, segmentHint);
+    const SAM_HOVER_RGB = [74, 125, 252];
+
+    // Brush size and hardness only apply to Paint/Erase.
+    const paintRows = [makeLabel("Brush size"), sizeCell, makeLabel("Hardness"), hardnessCell];
+    const paintRowDisplay = ["", "flex", "", "flex"];
+
+    // The model is only downloaded after the user asks for it; once present, the analyse button replaces the download one.
+    async function checkModel() {
+        state.model = { downloaded: false, size: 0, ...(await getModelStatus()) };
+        downloadBtn.textContent = `Download segmentation model (${Math.round(state.model.size / 1e6)} MB)`;
+        updateSegmentPanel();
+    }
+
+    downloadBtn.addEventListener("click", async (e) => {
+        e.preventDefault();
+        if (state.modelBusy) return;
+        state.modelBusy = true;
+        const label = downloadBtn.textContent;
+        downloadBtn.textContent = "Downloading…";
+        try {
+            await downloadModels();
+            state.model.downloaded = true;
+        } catch (err) {
+            console.error("Segmentation model download failed:", err);
+            downloadBtn.textContent = "Download failed";
+            setTimeout(() => (downloadBtn.textContent = label), 3000);
+        } finally {
+            state.modelBusy = false;
+        }
+        updateSegmentPanel();
+    });
+
+    function updateSegmentPanel() {
+        const downloaded = state.model?.downloaded;
+        downloadBtn.style.display = state.model && !downloaded ? "flex" : "none";
+        samBtn.style.display = downloaded && !state.sam ? "flex" : "none";
+        samBtn.textContent = "Click to auto segment the image";
+        segmentHint.style.display = state.sam ? "flex" : "none";
+        refreshOptionsHeight();
+    }
+
+    function updateTabs() {
+        setActive(brushBtn, !state.segment && state.tool === "brush");
+        setActive(eraserBtn, !state.segment && state.tool === "eraser");
+        setActive(segmentBtn, state.segment);
+        setActive(railBrushBtn, !state.segment && !state.bucket);
+        setActive(railFillBtn, !state.segment && state.bucket);
+        brushCursor.style.display = "none";
+        state.samHover = null;
+        state.samAt = null;
+        paintRows.forEach((el, i) => (el.style.display = state.segment ? "none" : paintRowDisplay[i]));
+        segmentPanel.style.display = state.segment ? "flex" : "none";
+        canvas.style.cursor = state.segment ? "pointer" : "crosshair";
+        if (state.segment) state.modelCheck ??= checkModel();
+        updateSegmentPanel();
+        redraw();
+    }
+
+    // Tabs show different rows, so grow or shrink the node by the change in panel height.
+    function refreshOptionsHeight() {
+        if (!state.maskOpen) return;
+        const height = options.offsetHeight + 6;
+        node.setSize([node.size[0], Math.max(node.size[1] + height - optionsHeight, TITLE_H + NODE_MARGIN + minWidgetHeight())]);
+        optionsHeight = height;
+        node.graph?.setDirtyCanvas(true, true);
+        requestAnimationFrame(() => requestAnimationFrame(syncCanvasSize));
+    }
+
+    function objectCanvas({ width, height, labels }, color) {
+        const c = document.createElement("canvas");
+        c.width = width;
+        c.height = height;
+        const cctx = c.getContext("2d");
+        const out = cctx.createImageData(width, height);
+        for (let i = 0; i < labels.length; i++) {
+            if (labels[i]) out.data.set(color, i * 4);
+        }
+        cctx.putImageData(out, 0, 0);
+        return c;
+    }
+
+    samBtn.addEventListener("click", async (e) => {
+        e.preventDefault();
+        if (state.samBusy || !state.img) return;
+        const img = state.img;
+        state.samBusy = true;
+        try {
+            const sam = await startSam(img, (text) => (samBtn.textContent = text));
+            if (img !== state.img) sam.dispose();
+            else state.sam = sam;
+        } catch (err) {
+            console.error("Click-to-segment failed:", err);
+            samBtn.textContent = "Analysis failed";
+            setTimeout(() => (samBtn.textContent = "Click to auto segment the image"), 3000);
+            return;
+        } finally {
+            state.samBusy = false;
+        }
+        updateSegmentPanel();
+    });
+
+    // Only the latest cursor position is decoded while an earlier one is still running.
+    async function hoverSam(e) {
+        const coords = toMaskCoords(e);
+        if (!coords) return clearSamHover();
+        state.samAt = [coords.x / maskCanvas.width, coords.y / maskCanvas.height];
+        if (state.samRunning) return;
+        const sam = state.sam;
+        state.samRunning = true;
+        try {
+            while (state.samAt && state.segment && state.sam === sam) {
+                const [fx, fy] = state.samAt;
+                state.samAt = null;
+                const result = await sam.predict(fx, fy);
+                if (state.samAt || !state.segment || state.sam !== sam) continue;
+                state.samHover = objectCanvas(result, [...SAM_HOVER_RGB, 150]);
+                redraw();
+            }
+        } catch (err) {
+            if (state.sam === sam) console.error("Click-to-segment failed:", err);
+        } finally {
+            state.samRunning = false;
+        }
+    }
+
+    function clearSamHover() {
+        state.samAt = null;
+        if (!state.samHover) return;
+        state.samHover = null;
+        redraw();
+    }
+
+    async function addSamObject(e) {
+        const coords = toMaskCoords(e);
+        if (!coords) return;
+        const object = objectCanvas(await state.sam.predict(coords.x / maskCanvas.width, coords.y / maskCanvas.height), [255, 255, 255, 255]);
+        editMask(() => {
+            maskCtx.imageSmoothingQuality = "high";
+            maskCtx.drawImage(object, 0, 0, maskCanvas.width, maskCanvas.height);
+        });
+    }
+
+    options.append(modeCell, ...paintRows, segmentPanel, makeLabel("Mask opacity"), opacityCell);
 
     // Opening the panel grows the node by the panel's height (and closing shrinks
     // it back) so the canvas keeps the space it had.
@@ -411,7 +612,7 @@ function setup(node) {
         options.style.display = state.maskOpen ? "grid" : "none";
         rail.style.display = state.maskOpen ? "flex" : "none";
         setActive(maskBtn, state.maskOpen);
-        canvas.style.cursor = state.maskOpen ? "crosshair" : "default";
+        canvas.style.cursor = state.maskOpen ? (state.segment ? "pointer" : "crosshair") : "default";
         if (!state.maskOpen) brushCursor.style.display = "none";
         // A hidden panel measures 0, so remember the height it had when opened.
         if (state.maskOpen) {
@@ -577,6 +778,7 @@ function setup(node) {
     // CSS-pixel units via this transform — otherwise a 1:1 buffer looks visibly
     // soft/pixelated on any display with a pixel ratio above 1.
     function redraw() {
+        fitBuffer();
         if (state.previewMask) drawMaskWindow();
         const cssW = canvas.clientWidth || canvas.width;
         const cssH = canvas.clientHeight || canvas.height;
@@ -618,6 +820,7 @@ function setup(node) {
         state.containRect = { x, y, w, h };
 
         ctx.drawImage(state.img, x, y, w, h);
+        if (state.maskOpen && state.samHover) ctx.drawImage(state.samHover, x, y, w, h);
         ctx.globalAlpha = state.opacity / 100;
         ctx.drawImage(tintedMaskOverlay(), x, y, w, h);
         ctx.restore();
@@ -630,17 +833,25 @@ function setup(node) {
     // canvas buffer to match it (scaled by devicePixelRatio for crisp text/
     // lines on HiDPI screens) and redraw — otherwise the browser would stretch
     // the old buffer non-uniformly to fill the new box.
-    const frameResizeObserver = new ResizeObserver(() => {
+    // Returns whether the buffer had to change. redraw() fits the buffer first, so a drawing is never scaled
+    // into a differently sized box, and syncCanvasSize() is also called every frame and after layout changes: a size
+    // change that reverts before the observer reports it (a tab switch resizing the options and then the node)
+    // would otherwise leave a stretched drawing behind.
+    function fitBuffer() {
         const cssW = Math.max(1, Math.round(frame.clientWidth));
         const cssH = Math.max(1, Math.round(frame.clientHeight));
         const dpr = window.devicePixelRatio || 1;
         const bufW = Math.round(cssW * dpr);
         const bufH = Math.round(cssH * dpr);
-        if (canvas.width === bufW && canvas.height === bufH) return;
+        if (canvas.width === bufW && canvas.height === bufH) return false;
         canvas.width = bufW;
         canvas.height = bufH;
-        redraw();
-    });
+        return true;
+    }
+    function syncCanvasSize() {
+        if (fitBuffer()) redraw();
+    }
+    const frameResizeObserver = new ResizeObserver(syncCanvasSize);
     frameResizeObserver.observe(frame);
 
     // One-time nudge to a pleasant 4:3 starting shape the first time an image
@@ -743,6 +954,10 @@ function setup(node) {
             const img = new Image();
             img.onload = () => {
                 state.img = img;
+                state.sam?.dispose();
+                state.sam = null;
+                state.samHover = null;
+                updateSegmentPanel();
                 state.w = img.naturalWidth;
                 state.h = img.naturalHeight;
                 maskCanvas.width = state.w;
@@ -848,7 +1063,7 @@ function setup(node) {
     }
 
     function updateBrushCursor(e) {
-        if (!state.img || !state.maskOpen || state.bucket) {
+        if (!state.img || !state.maskOpen || state.bucket || state.segment) {
             brushCursor.style.display = "none";
             return;
         }
@@ -867,6 +1082,10 @@ function setup(node) {
 
     canvas.addEventListener("pointerdown", (e) => {
         if (!state.img || !state.maskOpen) return;
+        if (state.segment) {
+            if (state.sam) addSamObject(e);
+            return;
+        }
         if (state.bucket) {
             const coords = toMaskCoords(e);
             if (coords) editMask(() => floodFill(coords.x, coords.y));
@@ -881,6 +1100,7 @@ function setup(node) {
     });
     canvas.addEventListener("pointermove", (e) => {
         updateBrushCursor(e);
+        if (state.maskOpen && state.segment && state.sam) hoverSam(e);
         if (!state.painting) return;
         paintEvent(e);
     });
@@ -892,6 +1112,7 @@ function setup(node) {
     });
     canvas.addEventListener("pointerleave", () => {
         brushCursor.style.display = "none";
+        clearSamHover();
     });
     canvas.addEventListener("dblclick", () => fileInput.click());
 
@@ -1001,14 +1222,15 @@ function setup(node) {
     const onDrawForeground = node.onDrawForeground;
     node.onDrawForeground = function () {
         onDrawForeground?.apply(this, arguments);
+        syncCanvasSize();
         if (LiteGraph.vueNodesMode || domWidget.y == null || !node.outputs?.length) return;
         const slotY = node.getConnectionPos(false, 0)[1] - node.pos[1];
         const margin = Math.round(slotY - outputRowH / 2 - domWidget.y) - 12;
         toolbar.style.marginTop = `${margin}px`;
     };
 
-    // Narrowest width at which the Paint/Erase/reset row still fits beside the output slots.
-    const MIN_NODE_W = 200;
+    // Narrowest width at which the Paint/Erase/Segment/reset row still fits beside the output slots.
+    const MIN_NODE_W = 250;
     const onResize = node.onResize;
     node.onResize = function (size) {
         size[0] = Math.max(size[0], MIN_NODE_W);
