@@ -82,7 +82,7 @@ function setup(node) {
     hideWidget(imageWidget);
     hideWidget(maskWidget);
 
-    const state = { img: null, w: 0, h: 0, brush: 25, hardness: 50, opacity: 75, maskColor: "#a10f0f", tool: "brush", maskOpen: false, previewMask: false, painting: false, bucket: false, sam: null, model: null, modelCheck: null, modelBusy: false, segment: false, samBusy: false, samHover: null, samAt: null, samRunning: false };
+    const state = { img: null, w: 0, h: 0, brush: 25, hardness: 50, opacity: 75, maskColor: "#a10f0f", tool: "brush", maskOpen: false, previewMask: false, painting: false, bucket: false, sam: null, model: null, modelCheck: null, modelBusy: false, segment: false, samBusy: false, samHover: null, samAt: null, samRunning: false, zoom: 1, panX: 0, panY: 0 };
 
     const HISTORY_LIMIT = 10;
     const undoStack = [];
@@ -441,7 +441,13 @@ function setup(node) {
     const SAM_HOVER_RGB = [74, 125, 252];
 
     // Brush size and hardness only apply to Manual mode.
-    const paintRows = [makeLabel("Brush size"), sizeCell, makeLabel("Hardness"), hardnessCell];
+    attachTooltip(brushSlider, "Brush size: [ / ]");
+    const sizeLabel = makeLabel("Brush size");
+    attachTooltip(sizeLabel, "Brush size: [ / ]");
+    const hardnessLabel = makeLabel("Hardness");
+    attachTooltip(hardnessLabel, "Hardness: ⇧[ / ⇧]");
+    attachTooltip(hardnessSlider, "Hardness: ⇧[ / ⇧]");
+    const paintRows = [sizeLabel, sizeCell, hardnessLabel, hardnessCell];
     const paintRowDisplay = ["", "flex", "", "flex"];
 
     // The model is only downloaded after the user asks for it; once present, the analyse button replaces the download one.
@@ -631,12 +637,12 @@ function setup(node) {
         }
         return group;
     }
-    const railBrushBtn = makeButton(ICONS.brush, "Brush");
-    const railEraseBtn = makeButton(ICONS.eraser, "Eraser");
-    const railFillBtn = makeButton(ICONS.bucket, "Fill bucket");
+    const railBrushBtn = makeButton(ICONS.brush, "Brush (P)");
+    const railEraseBtn = makeButton(ICONS.eraser, "Eraser (E)");
+    const railFillBtn = makeButton(ICONS.bucket, "Fill bucket (G)");
     const invertBtn = makeButton(ICONS.invert, "Invert mask");
-    const undoBtn = makeButton(ICONS.undo, "Undo");
-    const redoBtn = makeButton(ICONS.redo, "Redo");
+    const undoBtn = makeButton(ICONS.undo, "Undo (⌘Z)");
+    const redoBtn = makeButton(ICONS.redo, "Redo (⇧⌘Z)");
     undoBtn.addEventListener("click", (e) => {
         e.preventDefault();
         stepHistory(undoStack, redoStack);
@@ -724,7 +730,8 @@ function setup(node) {
     frame.appendChild(brushPreviewLabel);
     const previewCtx = brushPreview.getContext("2d");
     let brushPreviewTimer = null;
-    function showBrushPreview() {
+    // `at` ({x, y} in frame coordinates) puts the preview under the pointer; omitted, it sits at the center.
+    function showBrushPreview(at) {
         clearTimeout(brushPreviewTimer);
         const size = state.brush;
         brushPreview.width = brushPreview.height = size;
@@ -737,7 +744,10 @@ function setup(node) {
         previewCtx.globalCompositeOperation = "source-over";
         brushPreview.style.display = "block";
         brushPreviewLabel.textContent = `${size} px · ${state.hardness}%`;
-        brushPreviewLabel.style.top = `calc(50% + ${r + 8}px)`;
+        brushPreview.style.left = at ? `${at.x}px` : "50%";
+        brushPreview.style.top = at ? `${at.y}px` : "50%";
+        brushPreviewLabel.style.left = at ? `${at.x}px` : "50%";
+        brushPreviewLabel.style.top = at ? `${at.y + r + 8}px` : `calc(50% + ${r + 8}px)`;
         brushPreviewLabel.style.display = "block";
         brushPreviewTimer = setTimeout(hideBrushPreview, 700);
     }
@@ -799,10 +809,10 @@ function setup(node) {
         // units) instead of stretching it to fill, so its own aspect ratio is
         // preserved regardless of the frame's current shape.
         const scale = Math.min(cssW / state.w, cssH / state.h);
-        const w = state.w * scale;
-        const h = state.h * scale;
-        const x = (cssW - w) / 2;
-        const y = (cssH - h) / 2;
+        const w = state.w * scale * state.zoom;
+        const h = state.h * scale * state.zoom;
+        const x = (cssW - w) / 2 + state.panX;
+        const y = (cssH - h) / 2 + state.panY;
         state.containRect = { x, y, w, h };
 
         ctx.drawImage(state.img, x, y, w, h);
@@ -961,6 +971,7 @@ function setup(node) {
             state.sam = null;
             state.samHover = null;
             updateSegmentPanel();
+            state.zoom = 1; state.panX = 0; state.panY = 0;
             state.w = img.naturalWidth;
             state.h = img.naturalHeight;
             maskCanvas.width = state.w;
@@ -1078,6 +1089,7 @@ function setup(node) {
         c.fillRect(x - r, y - r, r * 2, r * 2);
     }
 
+    let lastPointer = null;
     function updateBrushCursor(e) {
         if (!state.img || !state.maskOpen || state.bucket || state.segment) {
             brushCursor.style.display = "none";
@@ -1093,6 +1105,7 @@ function setup(node) {
         // (both pre-transform), matching the space absolute positioning uses.
         brushCursor.style.left = `${e.offsetX + canvas.offsetLeft}px`;
         brushCursor.style.top = `${e.offsetY + canvas.offsetTop}px`;
+        lastPointer = { x: e.offsetX + canvas.offsetLeft, y: e.offsetY + canvas.offsetTop };
         brushCursor.style.borderColor = state.tool === "eraser" ? "rgba(255,120,120,0.9)" : "rgba(255,255,255,0.85)";
     }
 
@@ -1127,40 +1140,124 @@ function setup(node) {
         commitMask();
     });
     canvas.addEventListener("pointerleave", () => {
+        lastPointer = null;
         brushCursor.style.display = "none";
         clearSamHover();
     });
     canvas.addEventListener("dblclick", () => fileInput.click());
 
-    // DOM widgets are overlaid on top of ComfyUI's actual graph <canvas>, so
-    // wheel/pinch events over our widget never reach it, and the browser falls
-    // back to zooming the whole page. Forward the event onto the graph canvas
-    // instead, so LiteGraph zooms the graph exactly like it does everywhere else.
-    root.addEventListener(
+    // --- keyboard ----------------------------------------------------------
+    // ComfyUI runs graph undo (Cmd+Z) from a window-level listener registered before ours, and only skips it while
+    // a text field has focus. So the editor owns keyboard input through one invisible read-only text field: it takes
+    // focus when the canvas is used with the mask editor open, loses it when anything else is clicked, and while it
+    // has focus its keydown handler below is the only thing that sees the shortcuts.
+    const keySink = document.createElement("input");
+    keySink.type = "text";
+    keySink.readOnly = true;
+    keySink.tabIndex = -1;
+    keySink.setAttribute("aria-hidden", "true");
+    keySink.style.cssText = "position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;pointer-events:none;";
+    root.appendChild(keySink);
+    // The browser moves focus to <body> as part of the mouse event's default action, so take it after that.
+    const grabKeys = () => { if (state.maskOpen) setTimeout(() => keySink.focus({ preventScroll: true }), 0); };
+    canvas.addEventListener("pointerdown", grabKeys);
+    canvas.addEventListener("pointerup", grabKeys);
+    window.addEventListener("pointerdown", (e) => { if (!root.contains(e.target)) keySink.blur(); }, true);
+
+    function adjust(slider, key, value) {
+        state[key] = Math.max(+slider.min, Math.min(+slider.max, value));
+        slider.value = state[key];
+        slider.dispatchEvent(new Event("input")); // syncs the value box
+        showBrushPreview(lastPointer);
+        if (lastPointer) brushCursor.style.width = brushCursor.style.height = `${state.brush}px`;
+    }
+    // Photoshop's bindings: P pen, E eraser, G bucket, [ ] brush size, Shift+[ ] hardness, Cmd+Z / Shift+Cmd+Z history.
+    const SHORTCUTS = {
+        KeyP: () => selectTool("brush", false),
+        KeyE: () => selectTool("eraser", false),
+        KeyG: () => selectTool("brush", true),
+        BracketLeft: (e) => (e.shiftKey ? adjust(hardnessSlider, "hardness", state.hardness - 25) : adjust(brushSlider, "brush", state.brush - Math.max(1, Math.round(state.brush * 0.1)))),
+        BracketRight: (e) => (e.shiftKey ? adjust(hardnessSlider, "hardness", state.hardness + 25) : adjust(brushSlider, "brush", state.brush + Math.max(1, Math.round(state.brush * 0.1)))),
+    };
+    keySink.addEventListener("keydown", (e) => {
+        if (!state.maskOpen || !state.img || e.altKey) return;
+        let run;
+        if (e.metaKey || e.ctrlKey) {
+            if (e.code !== "KeyZ") return;
+            run = () => (e.shiftKey ? stepHistory(redoStack, undoStack) : stepHistory(undoStack, redoStack));
+        } else run = SHORTCUTS[e.code] && (() => SHORTCUTS[e.code](e));
+        if (!run) return;
+        e.preventDefault();
+        e.stopPropagation();
+        run();
+    });
+
+    // --- zoom / pan --------------------------------------------------------
+    // DOM widgets sit on top of ComfyUI's graph <canvas>, so wheel/pinch events over them would otherwise zoom the
+    // whole page. Over the image, pinch zooms the image and (once zoomed) two-finger scroll pans it; anywhere else
+    // on the widget the event is forwarded to the graph canvas so LiteGraph zooms/pans the graph as usual.
+    function overImage(x, y) {
+        const r = canvas.getBoundingClientRect();
+        return !!state.img && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    }
+    // Keeps the zoomed image covering the frame (centered while it is smaller than the frame in an axis).
+    function clampPan() {
+        const cssW = frame.clientWidth, cssH = frame.clientHeight;
+        const fit = Math.min(cssW / state.w, cssH / state.h) * state.zoom;
+        const mx = Math.max(0, (state.w * fit - cssW) / 2);
+        const my = Math.max(0, (state.h * fit - cssH) / 2);
+        state.panX = Math.max(-mx, Math.min(mx, state.panX));
+        state.panY = Math.max(-my, Math.min(my, state.panY));
+    }
+    function zoomImage(clientX, clientY, factor) {
+        if (!overImage(clientX, clientY)) return false;
+        const r = canvas.getBoundingClientRect();
+        const px = (clientX - r.left) * (frame.clientWidth / r.width) - frame.clientWidth / 2;
+        const py = (clientY - r.top) * (frame.clientHeight / r.height) - frame.clientHeight / 2;
+        const next = Math.min(20, Math.max(1, state.zoom * factor));
+        const k = next / state.zoom;
+        // keep the image point under the pointer fixed
+        state.panX = px - (px - state.panX) * k;
+        state.panY = py - (py - state.panY) * k;
+        state.zoom = next;
+        clampPan();
+        redraw();
+        return true;
+    }
+    function panImage(clientX, clientY, dx, dy) {
+        if (state.zoom <= 1 || !overImage(clientX, clientY)) return false;
+        state.panX -= dx;
+        state.panY -= dy;
+        clampPan();
+        redraw();
+        return true;
+    }
+    // Window capture phase, so ComfyUI's own wheel handlers never see an event over the widget.
+    window.addEventListener(
         "wheel",
         (e) => {
+            if (!root.contains(e.target) || !e.isTrusted) return;
             e.preventDefault();
-            const graphCanvas = document.getElementById("graph-canvas");
-            if (!graphCanvas) return;
-            graphCanvas.dispatchEvent(
+            e.stopImmediatePropagation();
+            if (e.ctrlKey ? zoomImage(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.01)) : panImage(e.clientX, e.clientY, e.deltaX, e.deltaY)) return;
+            document.getElementById("graph-canvas")?.dispatchEvent(
                 new WheelEvent("wheel", {
-                    deltaX: e.deltaX,
-                    deltaY: e.deltaY,
-                    deltaMode: e.deltaMode,
-                    clientX: e.clientX,
-                    clientY: e.clientY,
-                    ctrlKey: e.ctrlKey,
-                    bubbles: true,
-                    cancelable: true,
+                    deltaX: e.deltaX, deltaY: e.deltaY, deltaMode: e.deltaMode,
+                    clientX: e.clientX, clientY: e.clientY, ctrlKey: e.ctrlKey,
+                    bubbles: true, cancelable: true,
                 })
             );
         },
-        { passive: false }
+        { passive: false, capture: true }
     );
-    // Safari's trackpad-pinch gesture events have no LiteGraph equivalent to
-    // forward to; just stop them from triggering native page zoom.
-    root.addEventListener("gesturestart", (e) => e.preventDefault());
-    root.addEventListener("gesturechange", (e) => e.preventDefault());
+    // Safari reports trackpad pinch as gesture events instead of ctrl+wheel.
+    let lastGestureScale = 1;
+    root.addEventListener("gesturestart", (e) => { e.preventDefault(); lastGestureScale = 1; });
+    root.addEventListener("gesturechange", (e) => {
+        e.preventDefault();
+        zoomImage(e.clientX, e.clientY, e.scale / lastGestureScale);
+        lastGestureScale = e.scale;
+    });
     root.addEventListener("gestureend", (e) => e.preventDefault());
 
     frame.addEventListener("dragover", (e) => {
@@ -1224,6 +1321,7 @@ function setup(node) {
             }
             const img = await loadBlobImage(blob);
             state.img = img;
+            state.zoom = 1; state.panX = 0; state.panY = 0;
             state.w = img.naturalWidth;
             state.h = img.naturalHeight;
             maskCanvas.width = state.w;
