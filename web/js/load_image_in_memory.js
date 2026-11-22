@@ -1,11 +1,14 @@
 const { app } = window.comfyAPI.app;
 import { ignoreWidgetWidth } from "./forward_canvas_events.js";
 import { startSam, getModelStatus, downloadModels } from "./segmentation.js";
+import { isRef, putImage, putMask, getBlob, touch, migrateBase64, track, released } from "./image_store.js";
 
 // Drag-and-drop image + paint-mask widget for LoadImageInMemory.
-// Everything happens client-side (FileReader + canvas); the resulting PNGs
-// are base64-encoded straight into the node's hidden "image"/"mask" string
-// widgets, so nothing is ever uploaded to input/ or input/clipspace/.
+// Everything happens client-side (canvas + IndexedDB). The image file and the painted
+// mask are kept in a browser-side blob store (image_store.js); the node's hidden
+// "image"/"mask" string widgets only hold short "mem:<id>" references, so workflows and
+// drafts stay small. The bytes are swapped back into the prompt right before queueing,
+// so nothing is ever uploaded to input/ or input/clipspace/.
 
 // Minimal line-style icons (stroke only, no fill) to match a clean, flat toolbar.
 const ICON_SVG_OPEN = 'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"';
@@ -255,6 +258,7 @@ function setup(node) {
         state.sam?.dispose();
         maskWindow.remove();
         colorInput.remove();
+        released([imageWidget.value, maskWidget.value]);
         return onRemoved?.apply(this, arguments);
     };
 
@@ -923,38 +927,68 @@ function setup(node) {
         maskCtx.putImageData(img, 0, 0);
     }
 
+    let maskCommitSeq = 0;
     function commitMask() {
-        maskWidget.value = state.w ? maskCanvas.toDataURL("image/png").split(",")[1] : "";
-        node.graph?.setDirtyCanvas(true, true);
+        const seq = ++maskCommitSeq;
+        if (!state.w) {
+            maskWidget.value = "";
+            node.graph?.setDirtyCanvas(true, true);
+            return;
+        }
+        track(new Promise((resolve) => {
+            maskCanvas.toBlob(async (blob) => {
+                try {
+                    const ref = await putMask(blob);
+                    // A newer stroke may have finished first; only the latest commit wins.
+                    if (seq === maskCommitSeq) maskWidget.value = ref;
+                } catch (err) {
+                    console.error("[in-memory-nodes] could not store mask", err);
+                }
+                node.graph?.setDirtyCanvas(true, true);
+                resolve();
+            }, "image/png");
+        }));
     }
 
     function loadFile(file) {
         if (!file || !file.type.startsWith("image/")) return;
-        const reader = new FileReader();
-        reader.onload = () => {
-            const dataUrl = reader.result;
-            const img = new Image();
-            img.onload = () => {
-                state.img = img;
-                state.sam?.dispose();
-                state.sam = null;
-                state.samHover = null;
-                updateSegmentPanel();
-                state.w = img.naturalWidth;
-                state.h = img.naturalHeight;
-                maskCanvas.width = state.w;
-                maskCanvas.height = state.h;
-                maskCtx.clearRect(0, 0, state.w, state.h);
-                undoStack.length = redoStack.length = 0;
-                updateHistoryButtons();
-                autoSizeOnce();
-                redraw();
-                imageWidget.value = dataUrl.split(",")[1];
-                commitMask();
-            };
-            img.src = dataUrl;
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+            URL.revokeObjectURL(url);
+            state.img = img;
+            state.sam?.dispose();
+            state.sam = null;
+            state.samHover = null;
+            updateSegmentPanel();
+            state.w = img.naturalWidth;
+            state.h = img.naturalHeight;
+            maskCanvas.width = state.w;
+            maskCanvas.height = state.h;
+            maskCtx.clearRect(0, 0, state.w, state.h);
+            undoStack.length = redoStack.length = 0;
+            updateHistoryButtons();
+            autoSizeOnce();
+            redraw();
+            const previous = [imageWidget.value, maskWidget.value];
+            track(putImage(file).then((ref) => {
+                imageWidget.value = ref;
+                node.graph?.setDirtyCanvas(true, true);
+            }).catch((err) => {
+                console.error("[in-memory-nodes] could not store image", err);
+                toastError("Could not store image", String(err?.message ?? err));
+            }));
+            commitMask();
+            released(previous);
         };
-        reader.readAsDataURL(file);
+        img.onerror = () => URL.revokeObjectURL(url);
+        img.src = url;
+    }
+
+    function toastError(summary, detail) {
+        try {
+            app.extensionManager?.toast?.add({ severity: "error", summary, detail, life: 8000 });
+        } catch { /* best effort */ }
     }
 
     // offsetX/offsetY are reported by the browser relative to the canvas's own
@@ -1150,9 +1184,45 @@ function setup(node) {
     });
 
     // Restore from a saved workflow (widget values already deserialized by now).
-    if (imageWidget.value) {
-        const img = new Image();
-        img.onload = () => {
+    // Older workflows embed the raw base64; move it into the store and keep just the reference.
+    async function resolveBlob(widget, kind) {
+        const v = widget.value;
+        if (!v) return null;
+        if (isRef(v)) return getBlob(v);
+        const ref = await migrateBase64(v, kind);
+        widget.value = ref;
+        return getBlob(ref);
+    }
+
+    function loadBlobImage(blob) {
+        return new Promise((resolve, reject) => {
+            const url = URL.createObjectURL(blob);
+            const im = new Image();
+            im.onload = () => { URL.revokeObjectURL(url); resolve(im); };
+            im.onerror = () => { URL.revokeObjectURL(url); reject(new Error("decode failed")); };
+            im.src = url;
+        });
+    }
+
+    let restoredFrom = null;
+    async function restore() {
+        if (!imageWidget.value) {
+            redraw();
+            return;
+        }
+        if (restoredFrom === imageWidget.value) return;
+        restoredFrom = imageWidget.value;
+        try {
+            const blob = await resolveBlob(imageWidget, "image");
+            if (!blob) {
+                toastError(
+                    "Image missing",
+                    "The image for a Load Image (In-Memory) node is not in this browser's storage. Drop it onto the node again.",
+                );
+                redraw();
+                return;
+            }
+            const img = await loadBlobImage(blob);
             state.img = img;
             state.w = img.naturalWidth;
             state.h = img.naturalHeight;
@@ -1160,21 +1230,22 @@ function setup(node) {
             maskCanvas.height = state.h;
             // A restored node already has its saved size — never auto-size it.
             autoSized = true;
-            if (maskWidget.value) {
-                const m = new Image();
-                m.onload = () => {
-                    maskCtx.drawImage(m, 0, 0);
-                    redraw();
-                };
-                m.src = "data:image/png;base64," + maskWidget.value;
-            } else {
-                redraw();
-            }
-        };
-        img.src = "data:image/png;base64," + imageWidget.value;
-    } else {
+            const maskBlob = await resolveBlob(maskWidget, "mask");
+            if (maskBlob) maskCtx.drawImage(await loadBlobImage(maskBlob), 0, 0);
+            touch([imageWidget.value, maskWidget.value]).catch(() => {});
+        } catch (err) {
+            console.error("[in-memory-nodes] could not restore image", err);
+        }
         redraw();
     }
+    restore();
+    // Nodes created while loading a workflow get their widget values after setup runs.
+    const onConfigure = node.onConfigure;
+    node.onConfigure = function () {
+        const r = onConfigure?.apply(this, arguments);
+        restore();
+        return r;
+    };
 
     // Free resize, same idea as FastPreview: the widget's height tracks
     // whatever total node height the user drags to (node.size[1] minus title

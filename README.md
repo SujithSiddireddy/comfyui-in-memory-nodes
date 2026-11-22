@@ -55,8 +55,14 @@ They do not make ComfyUI itself forget the data:
 
 - Images still pass through server memory during execution, and the Preview, Save and
   Compare results stay in the in-memory execution history until it is cleared.
-- Load Image stores its image and mask as base64 in the workflow, so they are written
-  wherever the workflow is saved.
+- Load Image keeps its image and mask in the browser's IndexedDB. The workflow only holds a
+  short `mem:<id>` reference, so large images no longer overflow the draft autosave. The bytes
+  are added to the prompt when you queue it. A workflow opened in another browser (or after
+  clearing site data) shows "Image missing" until you drop the image again.
+- The browser store keeps the 5 most recently used images plus any image referenced by an
+  open graph, a draft or a saved workflow; everything else is cleaned up automatically
+  (after a 5 minute grace period). Workflows saved by older versions with embedded base64
+  are migrated into the store when opened.
 
 ## Nodes 2.0
 
